@@ -10,4 +10,5 @@ readme = "./README.md"
 keywords = ["WebAssembly", "gen", "generate", "wasm", "module"]
 
 [dependencies]
-leb128 = "0.2.1"
+leb128 = "0.2.4"
+byteorder = { version = "0.5", default-features = false }

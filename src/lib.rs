@@ -1,3 +1,4 @@
+use byteorder::{ByteOrder, LittleEndian};
 use leb128;
 
 #[derive(Debug, Clone)]
@@ -12,14 +13,14 @@ pub struct FuncExport {
     pub func: Func,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum ExportType {
     Func,
     Mem,
-    Global
+    Global,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum ImportType {
     Func,
 }
@@ -27,28 +28,52 @@ pub enum ImportType {
 #[derive(Debug, Clone)]
 pub struct FuncCode {
     pub opcode: u8,
-    pub immediates: Vec<u64>,
+    pub immediates: Vec<Imm>,
+    pub return_type: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Imm {
+    I64(i64),
+    F64(f64),
+}
+impl From<i64> for Imm {
+    #[inline]
+    fn from(v: i64) -> Self {
+        Imm::I64(v)
+    }
 }
 
 impl FuncCode {
     pub fn new0(opcode: u8) -> FuncCode {
         FuncCode {
             opcode,
-            immediates: vec![]
+            immediates: vec![],
+            return_type: None,
         }
     }
 
-    pub fn new1(opcode: u8, imm: u64) -> FuncCode {
+    pub fn new_control(opcode: u8, rt: u8) -> FuncCode {
         FuncCode {
             opcode,
-            immediates: vec![imm]
+            immediates: vec![],
+            return_type: Some(rt),
         }
     }
 
-    pub fn new2(opcode: u8, imm1: u64, imm2: u64) -> FuncCode {
+    pub fn new1(opcode: u8, imm: Imm) -> FuncCode {
         FuncCode {
             opcode,
-            immediates: vec![imm1, imm2]
+            immediates: vec![imm],
+            return_type: None,
+        }
+    }
+
+    pub fn new2(opcode: u8, imm1: Imm, imm2: Imm) -> FuncCode {
+        FuncCode {
+            opcode,
+            immediates: vec![imm1, imm2],
+            return_type: None,
         }
     }
 }
@@ -57,7 +82,7 @@ impl FuncCode {
 pub struct Func {
     pub sig: FuncType,
     pub locals: Vec<FuncLocal>,
-    pub code: Vec<FuncCode>
+    pub code: Vec<FuncCode>,
 }
 
 type Export = (String, usize, ExportType);
@@ -80,7 +105,9 @@ pub const ELEMENT_SECTION: u8 = 9;
 pub const CODE_SECTION: u8 = 10;
 pub const DATA_SECTION: u8 = 11;
 
-pub const NONE: u64 = 0x40;
+pub const UNREACHABLE: u8 = 0x00;
+
+pub const NONE: u8 = 0x40;
 pub const I32: u8 = 0x7F;
 pub const I64: u8 = 0x7E;
 pub const F32: u8 = 0x7D;
@@ -93,10 +120,29 @@ pub const F64_CONST: u8 = 0x44;
 
 pub const I32_EQZ: u8 = 0x45;
 pub const I32_EQ: u8 = 0x46;
-pub const I32_GT_U: u8 = 0x4B;
 pub const I32_NE: u8 = 0x47;
+pub const I32_LT_S: u8 = 0x48;
+pub const I32_LT_U: u8 = 0x49;
+pub const I32_GT_S: u8 = 0x4A;
+pub const I32_GT_U: u8 = 0x4B;
+pub const I32_LE_S: u8 = 0x4C;
+pub const I32_LE_U: u8 = 0x4D;
+pub const I32_GE_S: u8 = 0x4E;
 pub const I32_ADD: u8 = 0x6A;
+pub const I32_SUB: u8 = 0x6B;
 pub const I32_MUL: u8 = 0x6C;
+pub const I32_DIV_S: u8 = 0x6D;
+pub const I32_REM_S: u8 = 0x6F;
+pub const F32_DIV: u8 = 0x95;
+pub const F64_ADD: u8 = 0xA0;
+pub const F64_SUB: u8 = 0xA1;
+pub const F64_MUL: u8 = 0xA2;
+pub const F64_DIV: u8 = 0xA3;
+pub const F64_LE: u8 = 0x65;
+pub const F64_GE: u8 = 0x66;
+pub const I32_TRUNC_F32_S: u8 = 0xA8;
+pub const I32_TRUNC_F64_S: u8 = 0xAA;
+pub const F64_CONVERT_I32_S: u8 = 0xB7;
 
 pub const DROP: u8 = 0x1A;
 
@@ -113,6 +159,8 @@ pub const I32_STORE8: u8 = 0x3A;
 
 pub const BLOCK: u8 = 0x02;
 pub const LOOP: u8 = 0x03;
+pub const IF: u8 = 0x04;
+pub const ELSE: u8 = 0x05;
 pub const BR: u8 = 0x0C;
 pub const BR_IF: u8 = 0x0D;
 
@@ -120,6 +168,7 @@ pub const END: u8 = 0x0B;
 pub const RETURN: u8 = 0x0F;
 pub const CALL: u8 = 0x10;
 
+#[derive(Clone)]
 pub struct WasmCodeGen {
     funcs: Vec<(usize, Func)>,
     types: Vec<FuncType>,
@@ -138,6 +187,16 @@ fn write_name(bytes: &mut Vec<u8>, name: String) {
 
 fn write_unsigned_leb128(bytes: &mut Vec<u8>, n: u64) {
     leb128::write::unsigned(bytes, n).expect("could not write LEB128");
+}
+
+fn write_signed_leb128(bytes: &mut Vec<u8>, n: i64) {
+    leb128::write::signed(bytes, n).expect("could not write LEB128");
+}
+
+fn write_float(bytes: &mut Vec<u8>, n: f64) {
+    let mut b = [0; 8];
+    LittleEndian::write_f64(&mut b, n);
+    bytes.extend(b.iter())
 }
 
 fn write_unsigned_leb128_at_offset(bytes: &mut Vec<u8>, offset: usize, n: usize) {
@@ -212,8 +271,14 @@ fn write_code_local(bytes: &mut Vec<u8>, locals: &Vec<FuncLocal>) {
 fn write_code_expr(bytes: &mut Vec<u8>, codes: &Vec<FuncCode>) {
     for code in codes {
         bytes.push(code.opcode);
+        if let Some(rt) = code.return_type {
+            write_unsigned_leb128(bytes, rt as u64);
+        }
         for imm in &code.immediates {
-            write_unsigned_leb128(bytes, *imm);
+            match imm {
+                Imm::I64(n) => write_signed_leb128(bytes, *n),
+                Imm::F64(f) => write_float(bytes, *f),
+            };
         }
     }
 
@@ -246,7 +311,7 @@ fn write_data_section(bytes: &mut Vec<u8>, datum: &Vec<(u32, Vec<u8>)>) {
         bytes.push(0x0); // memidx
 
         bytes.push(I32_CONST);
-        write_unsigned_leb128(bytes, data.0 as u64); // offset
+        write_signed_leb128(bytes, data.0 as i64); // offset
         bytes.push(END);
 
         write_vec_len(bytes, &data.1); // vec length
@@ -292,9 +357,7 @@ fn write_global_section(bytes: &mut Vec<u8>, globals: &Vec<Global>) {
         bytes.push(*t);
         bytes.push(*mutability);
 
-        let expr = vec![
-            FuncCode::new1(I32_CONST, *init as u64)
-        ];
+        let expr = vec![FuncCode::new1(I32_CONST, Imm::I64(*init as i64))];
         write_code_expr(bytes, &expr);
     }
 }
@@ -314,7 +377,7 @@ macro_rules! write_section {
             // section fixup
             let section_len = after_offset - before_offset - 1;
 
-            // section length - fixup 
+            // section length - fixup
             write_unsigned_leb128_at_offset(&mut $b, before_offset, section_len);
         }
     };
@@ -339,18 +402,12 @@ impl WasmCodeGen {
         bytes.extend(&HEADER_MAGIC);
         bytes.extend(&HEADER_VERSION);
 
-        write_section!(bytes, self.types, TYPE_SECTION,
-                       write_type_section);
-        write_section!(bytes, self.imports, IMPORT_SECTION,
-                       write_imports_section);
-        write_section!(bytes, self.funcs, FUNCTION_SECTION,
-                       write_func_section);
-        write_section!(bytes, self.memories, MEMORY_SECTION,
-                       write_memory_section);
-        write_section!(bytes, self.globals, GLOBAL_SECTION,
-                       write_global_section);
-        write_section!(bytes, self.exports, EXPORT_SECTION,
-                       write_export_section);
+        write_section!(bytes, self.types, TYPE_SECTION, write_type_section);
+        write_section!(bytes, self.imports, IMPORT_SECTION, write_imports_section);
+        write_section!(bytes, self.funcs, FUNCTION_SECTION, write_func_section);
+        write_section!(bytes, self.memories, MEMORY_SECTION, write_memory_section);
+        write_section!(bytes, self.globals, GLOBAL_SECTION, write_global_section);
+        write_section!(bytes, self.exports, EXPORT_SECTION, write_export_section);
         write_section!(bytes, self.funcs, CODE_SECTION, write_code_section);
         write_section!(bytes, self.data, DATA_SECTION, write_data_section);
 
@@ -389,8 +446,13 @@ impl WasmCodeGen {
         bytes.len() as u32
     }
 
-    pub fn add_import(&mut self, module: String, name: String,
-                      import_type: ImportType, typeidx: usize) -> usize {
+    pub fn add_import(
+        &mut self,
+        module: String,
+        name: String,
+        import_type: ImportType,
+        typeidx: usize,
+    ) -> usize {
         let importidex = self.imports.len();
         self.imports.push((module, name, import_type, typeidx));
 
