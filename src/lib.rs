@@ -168,7 +168,6 @@ pub const END: u8 = 0x0B;
 pub const RETURN: u8 = 0x0F;
 pub const CALL: u8 = 0x10;
 
-#[derive(Clone)]
 pub struct WasmCodeGen {
     funcs: Vec<(usize, Func)>,
     types: Vec<FuncType>,
@@ -432,6 +431,18 @@ impl WasmCodeGen {
         self.add_type(f.sig);
 
         funcidx
+    }
+
+    pub fn replace_code_func(&mut self, idx: usize, code: Vec<FuncCode>) {
+        // we don't store the imports in the funcs map and the result of add_func includes it, so remove them.
+        let idx = idx - self.imports.len();
+        let (type_idx, old_func) = self.funcs[idx].clone();
+        let new_func = Func {
+            sig: old_func.sig,
+            locals: old_func.locals,
+            code,
+        };
+        self.funcs[idx] = (type_idx, new_func);
     }
 
     pub fn add_memory(&mut self, min: u32, max: u32) -> usize {
