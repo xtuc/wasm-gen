@@ -1,6 +1,8 @@
 use byteorder::{ByteOrder, LittleEndian};
 use leb128;
 
+mod name_section;
+
 #[derive(Debug, Clone)]
 pub struct FuncType {
     pub params: Vec<u8>,
@@ -93,6 +95,7 @@ type FuncLocal = (usize, u8);
 pub const HEADER_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
 pub const HEADER_VERSION: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
+pub const CUSTOM_SECTION: u8 = 0;
 pub const TYPE_SECTION: u8 = 1;
 pub const IMPORT_SECTION: u8 = 2;
 pub const FUNCTION_SECTION: u8 = 3;
@@ -176,6 +179,8 @@ pub struct WasmCodeGen {
     data: Vec<(u32, Vec<u8>)>, // (offset, bytes)
     imports: Vec<Import>,
     globals: Vec<Global>,
+    /// Custom name section for funcs
+    func_names: Vec<name_section::Naming>,
 }
 
 fn write_name(bytes: &mut Vec<u8>, name: String) {
@@ -320,6 +325,32 @@ fn write_data_section(bytes: &mut Vec<u8>, datum: &Vec<(u32, Vec<u8>)>) {
     }
 }
 
+fn write_custom_name_section(bytes: &mut Vec<u8>, names: &Vec<name_section::Naming>) {
+    write_name(bytes, "name".to_string());
+
+    // Assigns names to functions
+    name_section::write_var_uint7(1, bytes);
+
+    // need to store the current office to fixup later
+    let name_payload_len_offset = bytes.len();
+    // push 0 for now
+    bytes.push(0);
+
+    name_section::write_var_uint32(names.len() as u32, bytes);
+
+    for name in names {
+        name_section::write_var_uint32(name.index as u32, bytes);
+        name_section::write_var_uint32(name.name.len() as u32, bytes);
+        bytes.extend_from_slice(&name.name.as_bytes())
+    }
+
+    let after_offset = bytes.len();
+    let section_len = after_offset - name_payload_len_offset - 1;
+
+    // fixup section len
+    write_unsigned_leb128_at_offset(bytes, name_payload_len_offset, section_len);
+}
+
 fn write_export_section(bytes: &mut Vec<u8>, exports: &Vec<Export>) {
     write_vec_len(bytes, exports); // vec length
 
@@ -392,6 +423,7 @@ impl WasmCodeGen {
             data: vec![],
             imports: vec![],
             globals: vec![],
+            func_names: vec![],
         }
     }
 
@@ -409,8 +441,21 @@ impl WasmCodeGen {
         write_section!(bytes, self.exports, EXPORT_SECTION, write_export_section);
         write_section!(bytes, self.funcs, CODE_SECTION, write_code_section);
         write_section!(bytes, self.data, DATA_SECTION, write_data_section);
+        write_section!(
+            bytes,
+            self.func_names,
+            CUSTOM_SECTION,
+            write_custom_name_section
+        );
 
         bytes
+    }
+
+    pub fn set_name(&mut self, idx: usize, name: String) {
+        self.func_names.push(name_section::Naming {
+            index: idx as u32,
+            name,
+        });
     }
 
     pub fn add_type(&mut self, t: FuncType) -> usize {
