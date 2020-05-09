@@ -36,7 +36,12 @@ pub struct FuncCode {
 
 #[derive(Debug, Clone)]
 pub enum Imm {
+    // Some intruction have reserved bytes, which must be a single 0 byte.
+    // Using a long leb128 encoding of 0 is not valid
+    RESERVED,
+
     I64(i64),
+    I32(i32),
     F64(f64),
 }
 impl From<i64> for Imm {
@@ -78,6 +83,24 @@ impl FuncCode {
             return_type: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Element {
+    pub table: u32,
+    pub offset: u32,
+    pub funcs: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Table {
+    pub elemtype: TableElemType,
+    pub limits: (u32, u32), // (min, max)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TableElemType {
+    Funcref = 0x70,
 }
 
 #[derive(Debug, Clone)]
@@ -170,11 +193,14 @@ pub const BR_IF: u8 = 0x0D;
 pub const END: u8 = 0x0B;
 pub const RETURN: u8 = 0x0F;
 pub const CALL: u8 = 0x10;
+pub const CALL_INDIRECT: u8 = 0x11;
 
 pub struct WasmCodeGen {
     funcs: Vec<(usize, Func)>,
     types: Vec<FuncType>,
     exports: Vec<Export>,
+    elements: Vec<Element>,
+    tables: Vec<Table>,
     memories: Vec<(u32, u32)>,
     data: Vec<(u32, Vec<u8>)>, // (offset, bytes)
     imports: Vec<Import>,
@@ -248,6 +274,35 @@ fn write_func_section(bytes: &mut Vec<u8>, funcs: &Vec<(usize, Func)>) {
     }
 }
 
+fn write_element_section(bytes: &mut Vec<u8>, elements: &Vec<Element>) {
+    write_vec_len(bytes, elements); // vec length
+
+    for element in elements {
+        write_unsigned_leb128(bytes, element.table as u64);
+
+        let offset_expr = vec![FuncCode::new1(I32_CONST, Imm::I64(element.offset as i64))];
+        write_code_expr(bytes, &offset_expr);
+
+        write_vec_len(bytes, &element.funcs); // vec length
+        for func in &element.funcs {
+            write_unsigned_leb128(bytes, func.clone() as u64);
+        }
+    }
+}
+
+fn write_table_section(bytes: &mut Vec<u8>, tables: &Vec<Table>) {
+    write_vec_len(bytes, tables); // vec length
+
+    for table in tables {
+        bytes.push(table.elemtype as u8);
+
+        let (min, max) = table.limits;
+        bytes.push(0x01);
+        write_unsigned_leb128(bytes, min as u64);
+        write_unsigned_leb128(bytes, max as u64);
+    }
+}
+
 fn write_imports_section(bytes: &mut Vec<u8>, imports: &Vec<Import>) {
     write_vec_len(bytes, imports); // vec length
 
@@ -281,7 +336,9 @@ fn write_code_expr(bytes: &mut Vec<u8>, codes: &Vec<FuncCode>) {
         for imm in &code.immediates {
             match imm {
                 Imm::I64(n) => write_signed_leb128(bytes, *n),
+                Imm::I32(n) => write_signed_leb128(bytes, *n as i64),
                 Imm::F64(f) => write_float(bytes, *f),
+                Imm::RESERVED => bytes.push(0x0),
             };
         }
     }
@@ -418,7 +475,9 @@ impl WasmCodeGen {
         WasmCodeGen {
             types: vec![],
             funcs: vec![],
+            tables: vec![],
             exports: vec![],
+            elements: vec![],
             memories: vec![],
             data: vec![],
             imports: vec![],
@@ -436,9 +495,11 @@ impl WasmCodeGen {
         write_section!(bytes, self.types, TYPE_SECTION, write_type_section);
         write_section!(bytes, self.imports, IMPORT_SECTION, write_imports_section);
         write_section!(bytes, self.funcs, FUNCTION_SECTION, write_func_section);
+        write_section!(bytes, self.tables, TABLE_SECTION, write_table_section);
         write_section!(bytes, self.memories, MEMORY_SECTION, write_memory_section);
         write_section!(bytes, self.globals, GLOBAL_SECTION, write_global_section);
         write_section!(bytes, self.exports, EXPORT_SECTION, write_export_section);
+        write_section!(bytes, self.elements, ELEMENT_SECTION, write_element_section);
         write_section!(bytes, self.funcs, CODE_SECTION, write_code_section);
         write_section!(bytes, self.data, DATA_SECTION, write_data_section);
         write_section!(
@@ -488,6 +549,29 @@ impl WasmCodeGen {
             code,
         };
         self.funcs[idx] = (type_idx, new_func);
+    }
+
+    pub fn add_table(&mut self, elemtype: TableElemType, min: u32, max: u32) -> usize {
+        let idx = self.tables.len();
+
+        self.tables.push(Table {
+            elemtype,
+            limits: (min, max),
+        });
+
+        idx
+    }
+
+    pub fn add_element(&mut self, table: u32, offset: u32, funcs: Vec<u32>) -> usize {
+        let idx = self.elements.len();
+
+        self.elements.push(Element {
+            table,
+            offset,
+            funcs,
+        });
+
+        idx
     }
 
     pub fn add_memory(&mut self, min: u32, max: u32) -> usize {

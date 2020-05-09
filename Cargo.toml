@@ -2,7 +2,7 @@
 name = "wasm-gen"
 description = "Generates Wasm modules"
 repository = "https://github.com/xtuc/wasm-gen"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Sven Sauleau <sven@sauleau.com>"]
 edition = "2018"
 license = "MIT"
