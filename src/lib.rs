@@ -34,7 +34,7 @@ pub struct FuncCode {
     pub return_type: Option<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Imm {
     // Some intruction have reserved bytes, which must be a single 0 byte.
     // Using a long leb128 encoding of 0 is not valid
@@ -147,6 +147,10 @@ pub const F64_CONST: u8 = 0x44;
 pub const I32_EQZ: u8 = 0x45;
 pub const I32_EQ: u8 = 0x46;
 pub const I32_NE: u8 = 0x47;
+pub const I32_AND: u8 = 0x71;
+pub const I32_OR: u8 = 0x72;
+pub const I32_SHL: u8 = 0x74;
+pub const I32_SHR_U: u8 = 0x76;
 pub const I32_LT_S: u8 = 0x48;
 pub const I32_LT_U: u8 = 0x49;
 pub const I32_GT_S: u8 = 0x4A;
@@ -535,6 +539,14 @@ impl WasmCodeGen {
 
         self.funcs.push((self.types.len(), f.clone()));
         self.add_type(f.sig);
+
+        funcidx
+    }
+
+    pub fn add_func_with_type(&mut self, f: Func, t: u32) -> usize {
+        let funcidx = self.funcs.len() + self.imports.len();
+
+        self.funcs.push((t as usize, f.clone()));
 
         funcidx
     }
