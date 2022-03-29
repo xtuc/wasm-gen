@@ -412,6 +412,23 @@ fn write_custom_name_section(bytes: &mut Vec<u8>, names: &Vec<name_section::Nami
     write_unsigned_leb128_at_offset(bytes, name_payload_len_offset, section_len);
 }
 
+pub fn write_custom_section(bytes: &mut Vec<u8>, name: &str, content: &[u8]) {
+    bytes.push(0); // section type: custom
+
+    let start = bytes.len();
+    // 0 size for now, we'll fix once we know the exact size
+    bytes.push(0);
+
+    write_name(bytes, name.to_owned());
+    bytes.extend_from_slice(content);
+
+    let after_offset = bytes.len();
+    let section_len = after_offset - start - 1;
+
+    // fixup section len
+    write_unsigned_leb128_at_offset(bytes, start, section_len);
+}
+
 fn write_export_section(bytes: &mut Vec<u8>, exports: &Vec<Export>) {
     write_vec_len(bytes, exports); // vec length
 
